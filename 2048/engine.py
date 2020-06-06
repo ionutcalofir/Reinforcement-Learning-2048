@@ -38,11 +38,11 @@ class Engine:
 
         self.env = gym.make('2048-v0')
 
-        # if self.phase == 'train':
-        #     self.env.seed(42)
+        self.policy_net = model.DQN().to(self.device)
 
-        self.policy_net = model.DQN()
-        self.policy_net.to(self.device)
+        self.target_net = model.DQN().to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.0001)
         self.memory = ReplayMemory(10000)
@@ -114,7 +114,7 @@ class Engine:
         # This is merged based on the mask, such that we'll have either the expected
         # state value or 0 in case the state was final.
         next_state_values = torch.zeros(self.batch_size, device=self.device)
-        next_state_values[non_final_mask] = self.policy_net(non_final_next_states).max(1)[0].detach()
+        next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
 
         # Compute the expected Q values
         expected_state_action_values = reward_batch + (self.gamma * next_state_values)
@@ -152,12 +152,11 @@ class Engine:
 
                 state = next_state
 
-                if done:
-                    if (i_episode + 1) % 5 == 0:
-                        loss = self.optimize_model()
-                        running_loss += loss
-                        running_loss_cnt += 1
+                loss = self.optimize_model()
+                running_loss += loss
+                running_loss_cnt += 1
 
+                if done:
                     if (i_episode + 1) % 20 == 0:
                         self.writer.add_scalar('train loss',
                                                running_loss / running_loss_cnt,
@@ -169,6 +168,9 @@ class Engine:
                                                t,
                                                i_episode + 1)
                     break
+
+            if (i_episode + 1) % 10 == 0:
+                self.target_net.load_state_dict(self.policy_net.state_dict())
 
             if (i_episode + 1) % 20 == 0:
                 score = 0
