@@ -6,7 +6,9 @@ import random
 import math
 import torch.optim as optim
 import numpy as np
+import torch.nn as nn
 import torch.nn.functional as F
+from absl import logging
 from itertools import count
 from torch.utils.tensorboard import SummaryWriter
 
@@ -22,8 +24,8 @@ class Engine:
                  gamma=0.999,
                  eps_start=0.9,
                  eps_end=0.1,
-                 eps_decay=500,
-                 num_episodes=10000):
+                 eps_decay=1000,
+                 num_episodes=1000000):
         self.logdir = logdir
         self.phase = phase
         self.batch_size = batch_size
@@ -42,7 +44,7 @@ class Engine:
         self.policy_net = model.DQN()
         self.policy_net.to(self.device)
 
-        self.optimizer = optim.RMSprop(self.policy_net.parameters(), lr=0.0001)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.0001)
         self.memory = ReplayMemory(10000)
 
         self.n_actions = self.env.action_space.n
@@ -81,7 +83,7 @@ class Engine:
 
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
-            return
+            return 0
 
         transitions = self.memory.sample(self.batch_size)
 
@@ -108,9 +110,7 @@ class Engine:
         # Compute the expected Q values
         expected_state_action_values = reward_batch + (self.gamma * next_state_values)
 
-        # Compute Huber loss
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
-        print('Loss: {}'.format(loss.item()))
 
         # Optimize the model
         self.optimizer.zero_grad()
@@ -119,15 +119,16 @@ class Engine:
             param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
 
+        return loss.item()
+
     def train(self):
+        logging.info('Episode {}/{}'.format(0, self.num_episodes))
         for i_episode in range(self.num_episodes):
             self.env.reset()
             state = self.get_state(self.env.board)
 
+            episode_loss = 0
             for t in count():
-                if t % 10 == 0:
-                    print('Episode {}/{}, iter {}'.format(i_episode + 1, self.num_episodes, t + 1))
-
                 action = self.select_action(state)
                 next_state, reward, done, _ = self.env.step(action.item())
                 next_state = self.get_state(next_state)
@@ -138,26 +139,42 @@ class Engine:
 
                 state = next_state
 
-                self.optimize_model()
+                loss = self.optimize_model()
+                episode_loss += loss
                 if done:
+                    if (i_episode + 1) % 20 == 0:
+                        self.writer.add_scalar('train loss',
+                                               episode_loss / t,
+                                               i_episode + 1)
+                        self.writer.add_scalar('train_episode_t',
+                                               t,
+                                               i_episode + 1)
                     break
 
-            # if (i_episode + 1) % 100 == 0:
-            #     self.env.reset()
-            #     state = self.get_state(self.env.board)
-            #     self.env.render()
-            #     for t in count():
-            #         action = self.select_action(state, exploration=False)
-            #         next_state, _, done, _ = self.env.step(action.item())
-            #         next_state = self.get_state(next_state)
+            if (i_episode + 1) % 20 == 0:
+                score = 0
+                max_tile = 0
 
-            #         if torch.all(torch.eq(state, next_state)).item() == True:
-            #             break
+                self.env.reset()
+                state = self.get_state(self.env.board)
+                for t in count():
+                    action = self.select_action(state, exploration=False)
+                    next_state, _, done, _ = self.env.step(action.item())
+                    next_state = self.get_state(next_state)
 
-            #         print('Action: {}'.format(gym_2048.Base2048Env.ACTION_STRING[action.item()]))
-            #         self.env.render()
-            #         print()
-            #         if done:
-            #             break
+                    if done or (torch.all(torch.eq(state, next_state)).item() == True):
+                        score, max_tile = custom_utils.get_board_score(self.env.board)
+                        self.writer.add_scalar('episode_score',
+                                               score,
+                                               i_episode + 1)
+                        self.writer.add_scalar('episode_max_tile',
+                                               max_tile,
+                                               i_episode + 1)
+                        break
 
-            #         state = next_state
+                    state = next_state
+
+                logging.info('Episode {}/{}\nScore {}\nMax tile {}'.format(i_episode + 1, self.num_episodes,
+                                                                           score,
+                                                                           max_tile))
+                self.env.render()

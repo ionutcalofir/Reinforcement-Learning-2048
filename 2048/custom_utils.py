@@ -20,3 +20,14 @@ def create_dir(logdir, model_name):
     os.makedirs(path)
 
     return path
+
+def get_board_score(board):
+    max_tile = 0.
+    score = 0.
+
+    for row in board:
+        for tile in row:
+            max_tile = max(max_tile, tile)
+            score += tile
+
+    return score, max_tile
