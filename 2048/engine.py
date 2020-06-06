@@ -24,7 +24,7 @@ class Engine:
                  gamma=0.999,
                  eps_start=0.9,
                  eps_end=0.1,
-                 eps_decay=1000,
+                 eps_decay=2000,
                  num_episodes=1000000):
         self.logdir = logdir
         self.phase = phase
@@ -92,10 +92,16 @@ class Engine:
         # to Transition of batch-arrays.
         batch = Transition(*zip(*transitions))
 
+        # Compute a mask of non-final states and concatenate the batch elements
+        # (a final state would've been the one after which simulation ended)
+        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                            batch.next_state)), device=self.device, dtype=torch.bool)
+        non_final_next_states = torch.cat([s for s in batch.next_state
+                                                if s is not None])
+
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
-        next_state_batch = torch.cat(batch.next_state)
 
         # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken. These are the actions which would've been taken
@@ -105,7 +111,10 @@ class Engine:
         # Compute V(s_{t+1}) for all next states.
         # Expected values of actions for non_final_next_states are computed based
         # on the "older" target_net; selecting their best reward with max(1)[0].
-        next_state_values = self.policy_net(next_state_batch).max(1)[0].detach()
+        # This is merged based on the mask, such that we'll have either the expected
+        # state value or 0 in case the state was final.
+        next_state_values = torch.zeros(self.batch_size, device=self.device)
+        next_state_values[non_final_mask] = self.policy_net(non_final_next_states).max(1)[0].detach()
 
         # Compute the expected Q values
         expected_state_action_values = reward_batch + (self.gamma * next_state_values)
@@ -122,16 +131,20 @@ class Engine:
         return loss.item()
 
     def train(self):
+        running_loss = 0.
+        running_loss_cnt = 1
         logging.info('Episode {}/{}'.format(0, self.num_episodes))
         for i_episode in range(self.num_episodes):
             self.env.reset()
             state = self.get_state(self.env.board)
 
-            episode_loss = 0
             for t in count():
                 action = self.select_action(state)
                 next_state, reward, done, _ = self.env.step(action.item())
                 next_state = self.get_state(next_state)
+
+                if done:
+                    next_state = None
 
                 reward = (reward - 1.) / 8.
                 reward = torch.tensor([reward], device=self.device, dtype=torch.float)
@@ -139,13 +152,19 @@ class Engine:
 
                 state = next_state
 
-                loss = self.optimize_model()
-                episode_loss += loss
                 if done:
+                    if (i_episode + 1) % 5 == 0:
+                        loss = self.optimize_model()
+                        running_loss += loss
+                        running_loss_cnt += 1
+
                     if (i_episode + 1) % 20 == 0:
                         self.writer.add_scalar('train loss',
-                                               episode_loss / t,
+                                               running_loss / running_loss_cnt,
                                                i_episode + 1)
+                        running_loss = 0.
+                        running_loss_cnt = 1
+
                         self.writer.add_scalar('train_episode_t',
                                                t,
                                                i_episode + 1)
