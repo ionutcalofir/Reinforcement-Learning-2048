@@ -1,5 +1,6 @@
 import gym_2048
 import gym
+import os
 import torch
 import random
 import math
@@ -7,6 +8,7 @@ import torch.optim as optim
 import numpy as np
 import torch.nn.functional as F
 from itertools import count
+from torch.utils.tensorboard import SummaryWriter
 
 import model
 import custom_utils
@@ -14,13 +16,15 @@ from replay_memory import Transition, ReplayMemory
 
 class Engine:
     def __init__(self,
+                 logdir='./logdir',
                  phase='train',
                  batch_size=128,
                  gamma=0.999,
                  eps_start=0.9,
-                 eps_end=0.05,
+                 eps_end=0.1,
                  eps_decay=500,
                  num_episodes=10000):
+        self.logdir = logdir
         self.phase = phase
         self.batch_size = batch_size
         self.gamma = gamma
@@ -32,8 +36,8 @@ class Engine:
 
         self.env = gym.make('2048-v0')
 
-        if self.phase == 'train':
-            self.env.seed(42)
+        # if self.phase == 'train':
+        #     self.env.seed(42)
 
         self.policy_net = model.DQN()
         self.policy_net.to(self.device)
@@ -43,6 +47,8 @@ class Engine:
 
         self.n_actions = self.env.action_space.n
         self.steps_done = 0
+
+        self.writer = SummaryWriter(os.path.join(self.logdir, 'summaries'))
 
     def get_state(self, board):
         board_flatten = []
@@ -126,7 +132,7 @@ class Engine:
                 next_state, reward, done, _ = self.env.step(action.item())
                 next_state = self.get_state(next_state)
 
-                reward /= 1024.
+                reward = (reward - 1.) / 8.
                 reward = torch.tensor([reward], device=self.device, dtype=torch.float)
                 self.memory.push(state, action, reward, next_state)
 
@@ -139,14 +145,19 @@ class Engine:
             # if (i_episode + 1) % 100 == 0:
             #     self.env.reset()
             #     state = self.get_state(self.env.board)
+            #     self.env.render()
             #     for t in count():
             #         action = self.select_action(state, exploration=False)
             #         next_state, _, done, _ = self.env.step(action.item())
             #         next_state = self.get_state(next_state)
 
-            #         state = next_state
+            #         if torch.all(torch.eq(state, next_state)).item() == True:
+            #             break
 
+            #         print('Action: {}'.format(gym_2048.Base2048Env.ACTION_STRING[action.item()]))
             #         self.env.render()
             #         print()
             #         if done:
             #             break
+
+            #         state = next_state

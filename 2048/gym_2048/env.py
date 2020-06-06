@@ -94,10 +94,10 @@ class Base2048Env(gym.Env):
         print(' \t'.join(map(str, row)))
 
   def _sample_tiles(self, count=1):
-    """Sample tile 2 or 4."""
+    """Sample tile 2."""
 
-    choices = [2, 4]
-    probs = [0.9, 0.1]
+    choices = [2]
+    probs = [1.]
 
     tiles = self.np_random.choice(choices,
                                   size=count,
@@ -145,7 +145,7 @@ class Base2048Env(gym.Env):
     i = 1
     while i < len(row):
       if row[i] == row[i - 1]:
-        score += row[i] + row[i - 1]
+        score += 2
         result_row.append(row[i] + row[i - 1])
         i += 2
       else:
