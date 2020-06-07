@@ -250,11 +250,11 @@ class Engine:
         scores = []
         max_tiles = []
 
-        # self.eps_threshold = 0.05
-
         num_episodes = 1000
         for i in range(num_episodes):
-            self.eps_threshold = 1.
+            # self.eps_threshold = 1. # for random
+            self.eps_threshold = 0.5
+
             logging.info('Episode {}/{}'.format(i, num_episodes))
             self.env.reset()
             state = self.get_state(self.env.board)
