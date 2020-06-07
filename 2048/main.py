@@ -8,7 +8,7 @@ import custom_utils
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_enum('phase', 'train', ['train', 'test'], 'Phase to run.')
+flags.DEFINE_enum('phase', 'test', ['train', 'test'], 'Phase to run.')
 flags.DEFINE_string('logdir', './logdir', 'Where to save the models.')
 flags.DEFINE_string('model_name', 'dqn', 'Model name.')
 
@@ -22,7 +22,8 @@ def main(_):
     if FLAGS.phase == 'train':
         eng.train()
     elif FLAGS.phase == 'test':
-        pass
+        model_path = '/home/ionutc/Documents/Repositories/Reinforcement-Learning-2048/2048/logdir/327-dqn/models/model_55944.pt'
+        eng.test(model_path)
     else:
         raise Exception('Phase {} unknown!'.format(FLAGS.phase))
 

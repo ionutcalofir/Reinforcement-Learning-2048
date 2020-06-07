@@ -4,6 +4,7 @@ import os
 import torch
 import random
 import math
+import matplotlib.pyplot as plt
 import torch.optim as optim
 import numpy as np
 import torch.nn as nn
@@ -241,3 +242,62 @@ class Engine:
 
             if i_episode % 999 == 0:
                 torch.save(self.policy_net.state_dict(), os.path.join(self.logdir, 'models', 'model_{}.pt'.format(i_episode)))
+
+    def test(self, model_path):
+        self.policy_net.load_state_dict(torch.load(model_path))
+        self.policy_net.eval()
+
+        scores = []
+        max_tiles = []
+
+        self.eps_threshold = 0.05
+        # self.eps_threshold = 1.
+
+        num_episodes = 1000
+        for i in range(num_episodes):
+            logging.info('Episode {}/{}'.format(i, num_episodes))
+            self.env.reset()
+            state = self.get_state(self.env.board)
+
+            for t in count():
+                action = self.select_action(state, eps_greedy=True)
+                next_state, _, done, _ = self.env.step(action.item())
+                next_state = self.get_state(next_state)
+
+                if done:
+                    scores.append(np.sum(self.env.board))
+                    max_tiles.append(np.amax(self.env.board))
+                    break
+
+                state = next_state
+
+        d = {0: 0,
+             1: 0,
+             2: 0,
+             4: 0,
+             8: 0,
+             16: 0,
+             32: 0,
+             64: 0,
+             128: 0,
+             256: 0,
+             512: 0,
+             1024: 0,
+             2048: 0}
+        for tile in max_tiles:
+            d[tile] += 1
+
+        plt.figure()
+        plt.hist(scores)
+        plt.suptitle('Scores')
+        plt.xlabel('Scores')
+        plt.ylabel('Games')
+
+        plt.figure()
+        plt.suptitle('Max Tiles')
+        plt.bar(range(len(d)), list(d.values()), align='center')
+        plt.xticks(range(len(d)), list(d.keys()))
+        plt.xlabel('Tiles')
+        plt.ylabel('Games')
+
+        plt.show()
