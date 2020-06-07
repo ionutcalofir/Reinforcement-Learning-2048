@@ -53,13 +53,15 @@ class Base2048Env(gym.Env):
   def step(self, action: int):
     """Rotate board aligned with left action"""
 
+    prev_board = np.copy(self.board)
     # Align board action with left action
     rotated_obs = np.rot90(self.board, k=action)
     reward, updated_obs = self._slide_left_and_merge(rotated_obs)
     self.board = np.rot90(updated_obs, k=4 - action)
 
-    # Place one random tile on empty location
-    self._place_random_tiles(self.board, count=1)
+    if np.all(prev_board == self.board) == False:
+        # Place one random tile on empty location
+        self._place_random_tiles(self.board, count=1)
 
     done = self.is_done()
 

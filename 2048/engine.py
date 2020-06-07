@@ -20,10 +20,10 @@ class Engine:
     def __init__(self,
                  logdir='./logdir',
                  phase='train',
-                 batch_size=128,
+                 batch_size=256,
                  gamma=0.999,
                  eps_start=0.9,
-                 eps_end=0.1,
+                 eps_end=0.05,
                  eps_decay=2000,
                  num_episodes=1000000):
         self.logdir = logdir
@@ -44,13 +44,14 @@ class Engine:
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.0001)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.0001, weight_decay=0.000001)
         self.memory = ReplayMemory(10000)
 
         self.n_actions = self.env.action_space.n
         self.steps_done = 0
 
         self.writer = SummaryWriter(os.path.join(self.logdir, 'summaries'))
+        os.makedirs(os.path.join(self.logdir, 'models'))
 
     def get_state(self, board):
         board_flatten = []
@@ -62,12 +63,12 @@ class Engine:
         board_flatten = np.array(board_flatten, dtype=np.float32)
         return torch.from_numpy(board_flatten).to(self.device).unsqueeze(0)
 
-    def select_action(self, state, exploration=True):
+    def select_action(self, state, eps_greedy=False, inference=False):
         action = -1
-        if not exploration:
+        if inference:
             with torch.no_grad():
                 action = self.policy_net(state).max(dim=1)[1].view(1, 1)
-        else:
+        elif eps_greedy:
             sample = random.random()
             eps_threshold = self.eps_end + (self.eps_start - self.eps_end) * \
                             math.exp(-1. * self.steps_done / self.eps_decay)
@@ -78,11 +79,18 @@ class Engine:
                     action = self.policy_net(state).max(dim=1)[1].view(1, 1)
             else:
                 return torch.tensor([[random.randrange(self.n_actions)]], device=self.device, dtype=torch.long)
+        else:
+            softmax = nn.Softmax(dim=1)
+            with torch.no_grad():
+                action = softmax(self.policy_net(state))
+                act = np.random.choice([0, 1, 2, 3], p=action.detach().cpu().numpy()[0])
+
+                return torch.tensor([[act]], device=self.device, dtype=torch.long)
 
         return action
 
     def optimize_model(self):
-        if len(self.memory) < self.batch_size:
+        if len(self.memory) < 5000:
             return 0
 
         transitions = self.memory.sample(self.batch_size)
@@ -131,6 +139,7 @@ class Engine:
         return loss.item()
 
     def train(self):
+        tries = 0
         running_loss = 0.
         running_loss_cnt = 1
         logging.info('Episode {}/{}'.format(0, self.num_episodes))
@@ -143,14 +152,15 @@ class Engine:
                 next_state, reward, done, _ = self.env.step(action.item())
                 next_state = self.get_state(next_state)
 
+                reward = (reward - 1.) / 8.
+                if torch.all(torch.eq(state, next_state)).item() == True:
+                    reward = -1
+
                 if done:
                     next_state = None
 
-                reward = (reward - 1.) / 8.
                 reward = torch.tensor([reward], device=self.device, dtype=torch.float)
                 self.memory.push(state, action, reward, next_state)
-
-                state = next_state
 
                 loss = self.optimize_model()
                 running_loss += loss
@@ -169,7 +179,16 @@ class Engine:
                                                i_episode + 1)
                     break
 
-            if (i_episode + 1) % 10 == 0:
+                if torch.all(torch.eq(state, next_state)).item() == True:
+                    tries += 1
+                    if tries == 30:
+                        break
+                else:
+                    tries = 0
+
+                state = next_state
+
+            if (i_episode + 1) % 2 == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
 
             if (i_episode + 1) % 20 == 0:
@@ -179,7 +198,7 @@ class Engine:
                 self.env.reset()
                 state = self.get_state(self.env.board)
                 for t in count():
-                    action = self.select_action(state, exploration=False)
+                    action = self.select_action(state, inference=True)
                     next_state, _, done, _ = self.env.step(action.item())
                     next_state = self.get_state(next_state)
 
@@ -199,3 +218,6 @@ class Engine:
                                                                            score,
                                                                            max_tile))
                 self.env.render()
+
+            if i_episode % 999 == 0:
+                torch.save(self.policy_net.state_dict(), os.path.join(self.logdir, 'models', 'model_{}.pt'.format(i_episode)))
