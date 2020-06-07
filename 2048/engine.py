@@ -21,11 +21,15 @@ class Engine:
                  logdir='./logdir',
                  phase='train',
                  batch_size=256,
-                 gamma=0.999,
-                 eps_start=0.9,
+                 gamma=0.995,
+                 eps_start=1.,
                  eps_end=0.05,
-                 eps_decay=2000,
-                 num_episodes=1000000):
+                 eps_decay=0.999,
+                 num_episodes=1000000,
+                 learning_rate=5e-4,
+                 memory_size=10000,
+                 update_every=16,
+                 tau=1e-3):
         self.logdir = logdir
         self.phase = phase
         self.batch_size = batch_size
@@ -34,6 +38,10 @@ class Engine:
         self.eps_end = eps_end
         self.eps_decay = eps_decay
         self.num_episodes = num_episodes
+        self.learning_rate = learning_rate
+        self.memory_size = memory_size
+        self.update_every = update_every
+        self.tau = tau
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.env = gym.make('2048-v0')
@@ -44,10 +52,12 @@ class Engine:
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.0001, weight_decay=0.000001)
-        self.memory = ReplayMemory(10000)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
+        self.criterion = nn.MSELoss()
+        self.memory = ReplayMemory(self.memory_size)
 
         self.n_actions = self.env.action_space.n
+        self.eps_threshold = self.eps_start
         self.steps_done = 0
 
         self.writer = SummaryWriter(os.path.join(self.logdir, 'summaries'))
@@ -64,34 +74,44 @@ class Engine:
         return torch.from_numpy(board_flatten).to(self.device).unsqueeze(0)
 
     def select_action(self, state, eps_greedy=False, inference=False):
+        self.policy_net.eval()
         action = -1
         if inference:
             with torch.no_grad():
                 action = self.policy_net(state).max(dim=1)[1].view(1, 1)
         elif eps_greedy:
-            sample = random.random()
-            eps_threshold = self.eps_end + (self.eps_start - self.eps_end) * \
-                            math.exp(-1. * self.steps_done / self.eps_decay)
             self.steps_done += 1
+            sample = random.random()
 
-            if sample > eps_threshold:
+            if sample > self.eps_threshold:
                 with torch.no_grad():
                     action = self.policy_net(state).max(dim=1)[1].view(1, 1)
             else:
-                return torch.tensor([[random.randrange(self.n_actions)]], device=self.device, dtype=torch.long)
-        else:
+                action = torch.tensor([[random.randrange(self.n_actions)]], device=self.device, dtype=torch.long)
+        else: # probabilistic
+            self.steps_done += 1
             softmax = nn.Softmax(dim=1)
             with torch.no_grad():
                 action = softmax(self.policy_net(state))
                 act = np.random.choice([0, 1, 2, 3], p=action.detach().cpu().numpy()[0])
 
-                return torch.tensor([[act]], device=self.device, dtype=torch.long)
+                action = torch.tensor([[act]], device=self.device, dtype=torch.long)
 
+        self.policy_net.train()
+        self.eps_threshold = max(self.eps_threshold * self.eps_decay, self.eps_end)
         return action
 
+    def soft_optimize_model(self):
+        for target_param, policy_param in zip(self.target_net.parameters(),
+                                              self.policy_net.parameters()):
+            target_param.data.copy_(self.tau * policy_param.data + (1. - self.tau) * target_param.data)
+
     def optimize_model(self):
-        if len(self.memory) < 5000:
+        if len(self.memory) < self.batch_size:
             return 0
+
+        self.policy_net.train()
+        self.target_net.eval()
 
         transitions = self.memory.sample(self.batch_size)
 
@@ -122,24 +142,28 @@ class Engine:
         # This is merged based on the mask, such that we'll have either the expected
         # state value or 0 in case the state was final.
         next_state_values = torch.zeros(self.batch_size, device=self.device)
+
+        # Double DQN
+        # actions_q_policy = self.policy_net(non_final_next_states).detach().max(1)[1].unsqueeze(1).long()
+        # next_state_values[non_final_mask] = self.target_net(non_final_next_states).gather(1, actions_q_policy)[:, 0]
+
         next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0].detach()
 
         # Compute the expected Q values
         expected_state_action_values = reward_batch + (self.gamma * next_state_values)
 
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
+        loss = self.criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
-        for param in self.policy_net.parameters():
-            param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
+
+        self.soft_optimize_model()
 
         return loss.item()
 
     def train(self):
-        tries = 0
         running_loss = 0.
         running_loss_cnt = 1
         logging.info('Episode {}/{}'.format(0, self.num_episodes))
@@ -148,23 +172,25 @@ class Engine:
             state = self.get_state(self.env.board)
 
             for t in count():
-                action = self.select_action(state)
+                action = self.select_action(state, eps_greedy=True)
                 next_state, reward, done, _ = self.env.step(action.item())
                 next_state = self.get_state(next_state)
 
-                reward = (reward - 1.) / 8.
-                if torch.all(torch.eq(state, next_state)).item() == True:
-                    reward = -1
+                reward = reward / 8.
+                if torch.all(state == next_state).item() == True:
+                    reward = -1.
 
                 if done:
                     next_state = None
 
                 reward = torch.tensor([reward], device=self.device, dtype=torch.float)
+
                 self.memory.push(state, action, reward, next_state)
 
-                loss = self.optimize_model()
-                running_loss += loss
-                running_loss_cnt += 1
+                if (self.steps_done + 1) % self.update_every == 0:
+                    loss = self.optimize_model()
+                    running_loss += loss
+                    running_loss_cnt += 1
 
                 if done:
                     if (i_episode + 1) % 20 == 0:
@@ -178,13 +204,6 @@ class Engine:
                                                t,
                                                i_episode + 1)
                     break
-
-                if torch.all(torch.eq(state, next_state)).item() == True:
-                    tries += 1
-                    if tries == 30:
-                        break
-                else:
-                    tries = 0
 
                 state = next_state
 
@@ -214,9 +233,10 @@ class Engine:
 
                     state = next_state
 
-                logging.info('Episode {}/{}\nScore {}\nMax tile {}'.format(i_episode + 1, self.num_episodes,
-                                                                           score,
-                                                                           max_tile))
+                logging.info('Episode {}/{}, step {}\nScore {}\nMax tile {}\nEps threshold {}'.format(i_episode + 1, self.num_episodes, self.steps_done,
+                                                                                                   score,
+                                                                                                   max_tile,
+                                                                                                   self.eps_threshold))
                 self.env.render()
 
             if i_episode % 999 == 0:
