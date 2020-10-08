@@ -253,7 +253,7 @@ class Engine:
         num_episodes = 1000
         for i in range(num_episodes):
             # self.eps_threshold = 1. # for random
-            self.eps_threshold = 0.5
+            self.eps_threshold = 0.05
 
             logging.info('Episode {}/{}'.format(i, num_episodes))
             self.env.reset()
